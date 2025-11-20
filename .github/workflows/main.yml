@@ -2,8 +2,8 @@ name: Update Playlist Files
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
+    - cron: '*/15 * * * *'  # 每15分钟运行一次
+  workflow_dispatch:  # 手动触发
 
 jobs:
   update-playlists:
@@ -15,106 +15,92 @@ jobs:
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         
-    - name: Setup environment
+    - name: Download and process playlist files
       run: |
-        echo "开始播放列表更新流程..."
-        echo "时间: $(date)"
+        # 下载源文件
+        echo "下载源播放列表文件..."
+        curl -s -o source.m3u "https://raw.githubusercontent.com/sggc/SDU-IPTV-NEW/refs/heads/main/playlist.m3u"
         
-    - name: Download source playlist
-      id: download
-      run: |
-        echo "正在下载源文件..."
-        if curl -s -f -o source.m3u "https://raw.githubusercontent.com/sggc/SDU-IPTV-NEW/refs/heads/main/playlist.m3u"; then
-          file_size=$(wc -c < source.m3u)
-          file_lines=$(wc -l < source.m3u)
-          echo "下载成功 - 大小: ${file_size} 字节, 行数: ${file_lines}"
-          echo "download_status=success" >> $GITHUB_OUTPUT
-        else
-          echo "下载失败"
-          echo "download_status=failed" >> $GITHUB_OUTPUT
+        # 检查文件是否下载成功
+        if [ ! -s source.m3u ]; then
+          echo "错误: 无法下载源文件"
           exit 1
         fi
         
-    - name: Process playlists
-      if: steps.download.outputs.download_status == 'success'
-      run: |
-        echo "开始处理播放列表..."
+        echo "源文件下载成功，开始处理..."
         
-        # 创建处理脚本
-        cat > process.py << 'EOF'
+        # 第一步：生成 catchup 版本
+        echo "生成 playlist-catchup.m3u..."
+        python3 -c "
         import re
         import sys
         
-        try:
-            # 读取源文件
-            with open('source.m3u', 'r', encoding='utf-8') as f:
-                original = f.read()
-            
-            print(f"读取源文件: {len(original)} 字符")
-            
-            # 第一步：生成 catchup 版本
-            def update_catchup(match):
-                base_url = match.group(1)
-                return f'{base_url}?tvdr=${{(b)yyyyMMddHHmmss}}GMT-${{(e)yyyyMMddHHmmss}}GMT&r2h-seek-offset=-28800"'
-            
-            catchup_content = re.sub(
-                r'(catchup-source="[^"]+?)(?:\?tvdr=\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT)?"',
-                update_catchup,
-                original
-            )
-            
-            with open('playlist-catchup.m3u', 'w', encoding='utf-8') as f:
-                f.write(catchup_content)
-            
-            print("✓ Catchup 版本生成完成")
-            
-            # 第二步：生成 RTP 版本  
-            def update_rtsp(match):
-                return f'http://192.168.100.1:5140/rtsp/{match.group(1)}'
-            
-            rtp_content = re.sub(
-                r'rtsp://([^"\s\r\n]+)',
-                update_rtsp,
-                catchup_content
-            )
-            
-            with open('playlist-rtp.m3u', 'w', encoding='utf-8') as f:
-                f.write(rtp_content)
-            
-            print("✓ RTP 版本生成完成")
-            
-            # 统计信息
-            changes = sum(1 for a, b in zip(original, catchup_content) if a != b)
-            print(f"处理完成 - 检测到 {changes} 处修改")
-            
-        except Exception as e:
-            print(f"处理错误: {e}")
-            sys.exit(1)
-        EOF
+        # 读取源文件
+        with open('source.m3u', 'r', encoding='utf-8') as f:
+            content = f.read()
         
-        # 执行处理
-        python3 process.py
+        # 处理 catchup-source 参数
+        def replace_catchup(match):
+            url_part = match.group(1)
+            return f'{url_part}?tvdr=\${{(b)yyyyMMddHHmmss}}GMT-\${{(e)yyyyMMddHHmmss}}GMT&r2h-seek-offset=-28800\"'
         
-    - name: Check and commit changes
-      if: steps.download.outputs.download_status == 'success'
+        # 匹配并替换 catchup-source 中的参数
+        pattern = r'(catchup-source=\"[^\"]+?)(?:\?tvdr=\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT)?\"'
+        processed_content = re.sub(pattern, replace_catchup, content)
+        
+        # 写入 catchup 文件
+        with open('playlist-catchup.m3u', 'w', encoding='utf-8') as f:
+            f.write(processed_content)
+        
+        print('✓ playlist-catchup.m3u 生成完成')
+        "
+        
+        # 第二步：生成 RTP 版本
+        echo "生成 playlist-rtp.m3u..."
+        python3 -c "
+        import re
+        
+        # 读取 catchup 文件
+        with open('playlist-catchup.m3u', 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # 替换所有 rtsp:// 为 HTTP 代理格式
+        def replace_rtsp(match):
+            rtsp_path = match.group(1)
+            return f'http://192.168.100.1:5140/rtsp/{rtsp_path}'
+        
+        pattern = r'rtsp://([^\"\s\r\n]+)'
+        processed_content = re.sub(pattern, replace_rtsp, content)
+        
+        # 写入 RTP 文件
+        with open('playlist-rtp.m3u', 'w', encoding='utf-8') as f:
+            f.write(processed_content)
+        
+        print('✓ playlist-rtp.m3u 生成完成')
+        "
+        
+        # 显示处理统计
+        echo "处理完成统计:"
+        echo "源文件行数: $(wc -l < source.m3u)"
+        echo "Catchup文件行数: $(wc -l < playlist-catchup.m3u)" 
+        echo "RTP文件行数: $(wc -l < playlist-rtp.m3u)"
+        
+    - name: Check for changes
+      id: check_changes
       run: |
-        echo "检查文件变化..."
         git add playlist-catchup.m3u playlist-rtp.m3u
-        
         if git diff --staged --quiet; then
-          echo "没有变化需要提交"
+          echo "changes_detected=false" >> $GITHUB_OUTPUT
+          echo "没有检测到变化"
         else
-          echo "提交更改..."
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git commit -m "Auto-update: $(date +'%Y-%m-%d %H:%M')"
-          git push
-          echo "更改已提交"
+          echo "changes_detected=true" >> $GITHUB_OUTPUT
+          echo "检测到文件变化"
         fi
         
-    - name: Cleanup
-      if: always()
+    - name: Commit and push changes
+      if: steps.check_changes.outputs.changes_detected == 'true'
       run: |
-        # 清理临时文件
-        rm -f source.m3u process.py
-        echo "清理完成"
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git commit -m "Auto-update playlist files [skip ci]"
+        git push
