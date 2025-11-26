@@ -33,45 +33,29 @@ jobs:
         
         print("处理 catchup 参数...")
         # 处理 catchup-source 参数
-        catchup_content = re.sub(
+        content = re.sub(
             r'catchup-source="([^"]+?)\?tvdr=\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT"',
             r'catchup-source="\1?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"',
             content
         )
         
-        # 在文件开头添加 url-tvg 属性
-        catchup_content = re.sub(
-            r'^#EXTM3U',
-            r'#EXTM3U url-tvg="https://raw.githubusercontent.com/plsy1/epg/main/e/seven-days.xml.gz"',
-            catchup_content,
-            count=1
-        )
-        
-        # 写入 catchup 文件（重命名为 unicast-catchup.m3u）
-        with open('unicast-catchup.m3u', 'w', encoding='utf-8') as f:
-            f.write(catchup_content)
-        print("✓ unicast-catchup.m3u 生成完成")
+        # 写入 catchup 文件
+        with open('playlist-catchup.m3u', 'w', encoding='utf-8') as f:
+            f.write(content)
+        print("✓ playlist-catchup.m3u 生成完成")
         
         print("处理 RTP 转换...")
         # 处理 RTP 转换
-        rtp_content = re.sub(
+        content = re.sub(
             r'rtsp://([^"\s\r\n]+)',
             r'http://192.168.100.1:5140/rtsp/\1',
             content
         )
         
-        # 在文件开头添加 url-tvg 属性
-        rtp_content = re.sub(
-            r'^#EXTM3U',
-            r'#EXTM3U url-tvg="https://raw.githubusercontent.com/plsy1/epg/main/e/seven-days.xml.gz"',
-            rtp_content,
-            count=1
-        )
-        
-        # 写入 RTP 文件（重命名为 unicast-rtp.m3u）
-        with open('unicast-rtp.m3u', 'w', encoding='utf-8') as f:
-            f.write(rtp_content)
-        print("✓ unicast-rtp.m3u 生成完成")
+        # 写入 RTP 文件
+        with open('playlist-rtp.m3u', 'w', encoding='utf-8') as f:
+            f.write(content)
+        print("✓ playlist-rtp.m3u 生成完成")
         EOF
         
         python3 process.py
@@ -80,6 +64,6 @@ jobs:
       run: |
         git config --local user.name "github-actions[bot]"
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git add unicast-catchup.m3u unicast-rtp.m3u
+        git add playlist-catchup.m3u playlist-rtp.m3u
         git commit -m "Update playlist files" || exit 0
         git push
