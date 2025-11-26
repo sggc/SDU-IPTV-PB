@@ -13,11 +13,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Download source file
+    - name: Download source files
       run: |
         echo "下载源播放列表文件..."
         curl -s -o source.m3u "https://raw.githubusercontent.com/sggc/SDU-IPTV-NEW/refs/heads/main/playlist.m3u"
-        echo "下载完成，文件大小: $(wc -l < source.m3u) 行"
+        curl -s -o multicast-source.m3u "https://raw.githubusercontent.com/plsy1/iptv/refs/heads/main/multicast/multicast-weifang.m3u"
+        echo "下载完成，主文件大小: $(wc -l < source.m3u) 行"
+        echo "多播文件大小: $(wc -l < multicast-source.m3u) 行"
         
     - name: Process files
       run: |
@@ -35,14 +37,17 @@ jobs:
         # 处理 catchup-source 参数
         content = re.sub(
             r'catchup-source="([^"]+?)\?tvdr=\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT"',
-            r'catchup-source="\1?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"',
+            r'catchup="default" catchup-source="\1?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"',
             content
         )
         
+        # 在文件开头添加 EPG 信息
+        content = content.replace('#EXTM3U', '#EXTM3U url-tvg="https://raw.githubusercontent.com/plsy1/epg/main/e/seven-days.xml.gz"')
+        
         # 写入 catchup 文件
-        with open('playlist-catchup.m3u', 'w', encoding='utf-8') as f:
+        with open('unicast-catchup.m3u', 'w', encoding='utf-8') as f:
             f.write(content)
-        print("✓ playlist-catchup.m3u 生成完成")
+        print("✓ unicast-catchup.m3u 生成完成")
         
         print("处理 RTP 转换...")
         # 处理 RTP 转换
@@ -52,10 +57,104 @@ jobs:
             content
         )
         
+        # 在文件开头添加 EPG 信息
+        content = content.replace('#EXTM3U', '#EXTM3U url-tvg="https://raw.githubusercontent.com/plsy1/epg/main/e/seven-days.xml.gz"')
+        
         # 写入 RTP 文件
-        with open('playlist-rtp.m3u', 'w', encoding='utf-8') as f:
+        with open('unicast-rtp.m3u', 'w', encoding='utf-8') as f:
             f.write(content)
-        print("✓ playlist-rtp.m3u 生成完成")
+        print("✓ unicast-rtp.m3u 生成完成")
+        
+        print("处理多播文件...")
+        # 读取多播文件
+        with open('multicast-source.m3u', 'r', encoding='utf-8') as f:
+            multicast_content = f.read()
+        
+        # 在文件开头添加 EPG 信息
+        multicast_content = multicast_content.replace('#EXTM3U', '#EXTM3U url-tvg="https://raw.githubusercontent.com/plsy1/epg/main/e/seven-days.xml.gz"')
+        
+        # 处理回看源
+        multicast_content = re.sub(
+            r'catchup-source="rtsp://([^"]+?)\?tvdr=\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT"',
+            r'catchup="default" catchup-source="http://192.168.100.1:5140/rtsp/\1?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"',
+            multicast_content
+        )
+        
+        # 处理直播源头部
+        multicast_content = re.sub(
+            r'http://192\.168\.0\.1:5140/',
+            r'http://192.168.100.1:5140/',
+            multicast_content
+        )
+        
+        # 频道排序和重命名处理
+        lines = multicast_content.split('\n')
+        processed_lines = []
+        cctv_section = []
+        shandong_section = []
+        other_section = []
+        radio_section = []
+        current_group = None
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if line.startswith('#EXTINF:'):
+                # 获取频道名称
+                channel_name_match = re.search(r',([^,]+)$', line)
+                if channel_name_match:
+                    channel_name = channel_name_match.group(1).strip()
+                    
+                    # 获取下一行的URL
+                    if i + 1 < len(lines) and lines[i + 1].startswith('http'):
+                        url_line = lines[i + 1]
+                        
+                        # 分类处理
+                        if 'CGTN' in channel_name:
+                            # CGTN频道改为"其他频道"
+                            line = line.replace(channel_name, channel_name.replace('CGTN', '其他频道'))
+                            other_section.extend([line, url_line])
+                        elif '山东卫视' in channel_name:
+                            # 复制山东卫视到CCTV1下面
+                            shandong_line = line.replace('山东卫视', '央视频道')
+                            shandong_section.extend([shandong_line, url_line])
+                            # 原山东卫视保持不变
+                            shandong_section.extend([line, url_line])
+                        elif 'CCTV4' in channel_name and ('欧洲' in channel_name or '美洲' in channel_name):
+                            # CCTV4欧洲/美洲移动到山东少儿之后
+                            other_section.extend([line, url_line])
+                        elif '广播' in channel_name or '山东经济广播' in channel_name:
+                            # 广播频道移到末尾
+                            radio_line = line.replace(channel_name, '广播频道')
+                            radio_section.extend([radio_line, url_line])
+                        elif 'CCTV' in channel_name:
+                            # 央视频道
+                            cctv_section.extend([line, url_line])
+                        else:
+                            # 其他频道
+                            other_section.extend([line, url_line])
+                        
+                        i += 2  # 跳过URL行
+                        continue
+            
+            # 保留非频道行
+            if line.startswith('#EXTM3U') or line.startswith('#EXT-X') or line.strip() == '':
+                processed_lines.append(line)
+            
+            i += 1
+        
+        # 重新组合频道顺序
+        final_content = '\n'.join(processed_lines)
+        final_content += '\n' + '\n'.join(cctv_section)
+        final_content += '\n' + '\n'.join(shandong_section)
+        final_content += '\n' + '\n'.join(other_section)
+        final_content += '\n' + '\n'.join(radio_section)
+        
+        # 写入多播文件
+        with open('multicast-rtp.m3u', 'w', encoding='utf-8') as f:
+            f.write(final_content)
+        print("✓ multicast-rtp.m3u 生成完成")
+        
         EOF
         
         python3 process.py
@@ -64,6 +163,6 @@ jobs:
       run: |
         git config --local user.name "github-actions[bot]"
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git add playlist-catchup.m3u playlist-rtp.m3u
+        git add unicast-catchup.m3u unicast-rtp.m3u multicast-rtp.m3u
         git commit -m "Update playlist files" || exit 0
         git push
