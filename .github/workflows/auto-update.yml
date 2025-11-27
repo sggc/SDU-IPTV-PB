@@ -32,3 +32,7 @@ jobs:
         with:
           commit_message: Auto update unicast-catchup.m3u and unicast-rtp.m3u
           file_pattern: unicast-*.m3u
+     
+      - name: Process multicast playlist
+        run: python .github/scripts/process_multicast.py
+
