@@ -2,7 +2,7 @@ import requests
 import os
 
 # 源播放列表 URL
-PLAYLIST_URL = "https://raw.githubusercontent.com/jedisct1/proxytv/main/playlist.m3u"
+PLAYLIST_URL = "https://raw.githubusercontent.com/sggc/SDU-IPTV-NEW/refs/heads/main/playlist.m3u"
 
 # 输出文件名
 OUTPUT_FILES = {
